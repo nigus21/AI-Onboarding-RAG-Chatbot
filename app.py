@@ -1,68 +1,71 @@
-# app.py
-
+from data.employees import generate_employee_data
+from dotenv import load_dotenv
 import streamlit as st
-from assistant.user_data import get_user_data
-from assistant.assistant import assistant_chain, load_vectorstore
-from langchain_core.runnables import RunnableMap
+from langchain_community.document_loaders import PyPDFLoader  # type: ignore
+from langchain_text_splitters import RecursiveCharacterTextSplitter  # type: ignore
+from langchain_openai import OpenAIEmbeddings  # type: ignore
+from langchain_chroma import Chroma  # type: ignore
+import logging
+from assistant import Assistant
+from prompts import SYSTEM_PROMPT, WELCOME_MESSAGE  # type: ignore
+from langchain_groq import ChatGroq  # type: ignore
+from gui import AssistantGUI  # type: ignore
 
-# ------------------------------
-# Page configuration
-# ------------------------------
-st.set_page_config(page_title="AI Onboarding Assistant", page_icon="🤖")
 
-# ------------------------------
-# Load user data & vector store
-# ------------------------------
-user_data = get_user_data()
-vectorstore = load_vectorstore()
+if __name__ == "__main__":
 
-# ------------------------------
-# Sidebar
-# ------------------------------
-with st.sidebar:
-    st.image("logo.png", width=150)
-    st.header("Employee Profile")
-    st.json(user_data)
+    load_dotenv()
 
-# ------------------------------
-# Session state for chat
-# ------------------------------
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+    logging.basicConfig(level=logging.INFO)
 
-st.title("🤖 AI Onboarding Chatbot")
+    st.set_page_config(page_title="Umbrella Onboarding", page_icon="☂", layout="wide")
 
-# ------------------------------
-# User input
-# ------------------------------
-query = st.text_input("Ask me anything about company policies:")
+    @st.cache_data(ttl=3600, show_spinner="Loading Employee Data...")
+    def get_user_data():
+        return generate_employee_data(1)[0]
 
-if query:
-    # Display user message
-    st.session_state.messages.append({"role": "user", "content": query})
-    with st.chat_message("user"):
-        st.markdown(query)
+    @st.cache_resource(ttl=3600, show_spinner="Loading Vector Store...")
+    def init_vector_store(pdf_path):
+        try:
+            loader = PyPDFLoader(pdf_path)
+            docs = loader.load()
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=2000, chunk_overlap=200
+            )
+            splits = text_splitter.split_documents(docs)
 
-    # --------------------------
-    # Run the assistant chain
-    # --------------------------
-    # Streaming response for better UX
-    with st.chat_message("assistant"):
-        response_text = ""
-        for chunk in assistant_chain.stream({
-            "question": query,
-            "chat_history": st.session_state.messages,
-            "user": user_data,
-            "context": vectorstore.as_retriever(search_kwargs={"k":4})
-        }):
-            response_text += chunk
-            st.write(response_text, end="")  # Stream text incrementally
+            embedding_function = OpenAIEmbeddings()
+            persistent_path = "./data/vectorstore"
 
-        st.session_state.messages.append({"role": "assistant", "content": response_text})
+            vectorstore = Chroma.from_documents(
+                documents=splits,
+                embedding=embedding_function,
+                persist_directory=persistent_path,
+            )
 
-# ------------------------------
-# Display chat history (for refresh)
-# ------------------------------
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+            return vectorstore
+        except Exception as e:
+            logging.error(f"Error initializing vector store: {str(e)}")
+            st.error(f"Failed to initialize vector store: {str(e)}")
+            return None
+
+    customer_data = get_user_data()
+    vector_store = init_vector_store("data/umbrella_corp_policies.pdf")
+
+    if "customer" not in st.session_state:
+        st.session_state.customer = customer_data
+    if "messages" not in st.session_state:
+        st.session_state.messages = [{"role": "ai", "content": WELCOME_MESSAGE}]
+
+    llm = ChatGroq(model="llama-3.1-8b-instant")
+
+    assistant = Assistant(
+        system_prompt=SYSTEM_PROMPT,
+        llm=llm,
+        message_history=st.session_state.messages,
+        employee_information=st.session_state.customer,
+        vector_store=vector_store,
+    )
+    
+    gui = AssistantGUI(assistant)
+    gui.render()
