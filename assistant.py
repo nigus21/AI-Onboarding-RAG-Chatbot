@@ -1,6 +1,6 @@
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder  # type: ignore
+from langchain_core.output_parsers import StrOutputParser  # type: ignore
+from langchain_core.runnables import RunnablePassthrough  # type: ignore
 
 
 class Assistant:
@@ -36,9 +36,16 @@ class Assistant:
 
         output_parser = StrOutputParser()
 
+        def _get_retrieved_policies(_):
+            # If the vector store failed to initialize (e.g. due to API quota),
+            # gracefully degrade by returning an empty string instead of crashing.
+            if self.vector_store is None:
+                return ""
+            return self.vector_store.as_retriever()
+
         chain = (
             {
-                "retrieved_policy_information": self.vector_store.as_retriever(),
+                "retrieved_policy_information": _get_retrieved_policies,
                 "employee_information": lambda x: self.employee_information,
                 "user_input": RunnablePassthrough(),
                 "conversation_history": lambda x: self.messages,
